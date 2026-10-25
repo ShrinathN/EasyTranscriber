@@ -1,5 +1,13 @@
 # EasyTranscriber
 
+### tl;dr if you don't care about LLM-sloppa
+
+Its an application that lets you speak into your phone, your phone runs a speech-to-text model locally, and poses as a Bluetooth keyboard, inputting the transcribed text to whatever device is connected on the other end. Can be a PC, phone, tablet, smart TV, whatever you want.
+
+I made this because I wanted a fast, offline, speech-to-text device that could be portable and handy, plus device agnostic. I previously thought of having a RPi 5, but it would've gotten too big. A smartphone is an okay compromoise I suppose.
+
+You will need your phone to have the BLE HID profile enabled. I use a Motorola G45 smartphone for this, the BLE HID profile can be enabled in the developer settings.
+
 **Turn your Android phone into an offline, voice-powered Bluetooth keyboard.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
