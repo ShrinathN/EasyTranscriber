@@ -46,7 +46,7 @@ software to install on the receiving device.
 - **Works as a real Bluetooth keyboard.** Pair the phone with a computer or tablet and dictated text is typed into whatever text field is focused. The receiving device needs no app or driver.
 - **Two dictation modes:**
   - **Live typing:** words appear on the other device *while you are still speaking*.
-  - **Record first:** speak freely, then the whole recording is transcribed with punctuation and capitalization. Recording ends by itself when you pause (or tap stop, if you prefer), and you can review and edit the text before it is sent.
+  - **Record first:** speak freely, then the whole recording is transcribed with punctuation and capitalization. Recording ends by itself when you pause (or tap stop, if you prefer), and you can review and edit the text before it is sent. With *Keep listening after each pause* on, each phrase is typed after a pause and the microphone stays on until you tap stop.
 - **Fully offline recognition.** Models are downloaded once inside the app; after that no internet connection is needed.
 - **Choice of speech models**, each listed with its size, languages and license.
 - **Spoken punctuation** in live typing ("comma", "period", "new line", …) and automatic sentence capitalization.
@@ -114,7 +114,7 @@ flowchart LR
 |---|---|
 | **Dictate** | Choose *Live typing* or *Record first* and tap the microphone to start or stop. Shows the transcript, delivery progress and any connection problems. |
 | **Keyboard** | Turn the Bluetooth keyboard on or off, pair a new device, connect to a paired one, and send a test line. |
-| **Settings** | **Models** (download, choose or delete models for each mode; language for Whisper), whether *Record first* stops by itself after a pause, review before sending, live-typing speed vs. accuracy, spoken punctuation, capitalization and typing speed. |
+| **Settings** | **Models** (download, choose or delete models for each mode; language for Whisper), whether *Record first* stops by itself after a pause or keeps listening phrase by phrase, review before sending, live-typing speed vs. accuracy, spoken punctuation, capitalization and typing speed. |
 
 ### Spoken punctuation (Live typing)
 | Say | Types |

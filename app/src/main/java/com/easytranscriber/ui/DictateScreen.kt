@@ -309,13 +309,24 @@ private fun TranscriptArea(
         }
         is SessionState.Recording -> Centered {
             Text(formatTime(session.elapsedSec), style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Light)
-            Text("of ${formatTime(session.maxSec.toDouble())} max", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (session.keepListening) {
+                    "${session.phrasesSent} phrases typed" + if (session.phrasesPending > 0) " · ${session.phrasesPending} transcribing" else ""
+                } else {
+                    "of ${formatTime(session.maxSec.toDouble())} max"
+                },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             Spacer(Modifier.height(16.dp))
             LinearProgressIndicator(progress = { ((session.levelDb + 60f) / 60f).coerceIn(0f, 1f) }, modifier = Modifier.width(200.dp))
             Spacer(Modifier.height(16.dp))
             Text(
-                session.stopsAfterPauseSec?.let { "Recording. Transcription starts when you pause for ${formatSeconds(it)}, or tap stop." }
-                    ?: "Recording. Tap stop when you're done.",
+                when {
+                    session.keepListening -> "Listening. Each phrase is typed after a ${formatSeconds(session.stopsAfterPauseSec ?: 0.0)} pause. Tap stop to finish."
+                    session.stopsAfterPauseSec != null -> "Recording. Transcription starts when you pause for ${formatSeconds(session.stopsAfterPauseSec)}, or tap stop."
+                    else -> "Recording. Tap stop when you're done."
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )

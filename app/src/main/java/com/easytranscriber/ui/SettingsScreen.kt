@@ -91,6 +91,11 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
                     }
                 }
                 Text("Longer pauses leave room to think mid-sentence; you can always tap stop sooner.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
+                SwitchRow(
+                    "Keep listening after each pause",
+                    "Each phrase is transcribed and typed after a pause while the microphone stays on. Tap stop to finish. Phrases are sent without review.",
+                    s.keepListening,
+                ) { update { st -> st.copy(keepListening = it) } }
             }
             SwitchRow("Review before sending", "Check and edit the transcript before it is typed.", s.reviewBeforeSending) {
                 update { st -> st.copy(reviewBeforeSending = it) }

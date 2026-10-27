@@ -9,6 +9,7 @@ import com.easytranscriber.audio.AudioRecorder
 import com.easytranscriber.audio.AudioSource
 import com.easytranscriber.audio.MicrophoneAudioSource
 import com.easytranscriber.audio.WavFileAudioSource
+import com.easytranscriber.audio.WavWriter
 import com.easytranscriber.batch.BatchTranscriber
 import com.easytranscriber.batch.NoSpeechException
 import com.easytranscriber.batch.PauseDetector
@@ -47,6 +48,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -61,6 +63,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** What the dictation session is doing. Exactly one state at a time. */
 sealed interface SessionState {
@@ -80,8 +85,20 @@ sealed interface SessionState {
         val finishing: Boolean,
     ) : SessionState
 
-    /** [stopsAfterPauseSec]: the recording ends by itself after a pause this long (null = only by button). */
-    data class Recording(val elapsedSec: Double, val levelDb: Float, val maxSec: Int, val stopsAfterPauseSec: Double? = null) : SessionState
+    /**
+     * [stopsAfterPauseSec]: the recording ends by itself after a pause this long (null = only by button).
+     * [keepListening]: each pause instead types the phrase and listening continues; [phrasesSent] and
+     * [phrasesPending] count phrases typed and still being transcribed.
+     */
+    data class Recording(
+        val elapsedSec: Double,
+        val levelDb: Float,
+        val maxSec: Int,
+        val stopsAfterPauseSec: Double? = null,
+        val keepListening: Boolean = false,
+        val phrasesSent: Int = 0,
+        val phrasesPending: Int = 0,
+    ) : SessionState
 
     data class Transcribing(val fraction: Float, val segmentsDone: Int, val recordedSec: Double) : SessionState
 
@@ -353,6 +370,10 @@ class DictationController(
         }
         cancelled = false
         recording = true
+        if (s.autoStopOnPause && s.keepListening) {
+            recordContinuously(s, maxSec)
+            return
+        }
         sessionJob = scope.launch {
             val file = File(recordingsDir, "rec-${System.currentTimeMillis()}.wav")
             // Memory sampler for the session; must be cancelled on every exit path, otherwise this
@@ -456,6 +477,157 @@ class DictationController(
                 // Retention policy: recorded audio is deleted as soon as transcription ends,
                 // whether it succeeded, failed or was cancelled.
                 if (file.exists()) file.delete()
+            }
+        }
+    }
+
+    /**
+     * Record first, keep listening: one microphone session split into phrases at pauses. Each phrase
+     * is transcribed and typed in the background while listening continues, until the user stops.
+     * [maxSec] limits a single phrase, not the session.
+     */
+    private fun recordContinuously(s: AppSettings, maxSec: Int) {
+        sessionJob = scope.launch {
+            val pauseSec = s.pauseToStopMs / 1000.0
+            val phrases = Channel<WavWriter>(Channel.UNLIMITED)
+            val sent = AtomicInteger(0)
+            val pending = AtomicInteger(0)
+            val failure = AtomicReference<SessionState.Failed?>(null)
+            val typed = java.util.Collections.synchronizedList(ArrayList<String>())
+            var speech: SileroSpeechDetector? = null
+            var writer: WavWriter? = null
+            var listenedSec = 0.0
+            fun fail(f: SessionState.Failed) {
+                failure.compareAndSet(null, f)
+                recording = false
+            }
+            try {
+                // Load the model while the user is speaking.
+                val engineLoad = launch { prepareEngine(s) }
+                // Transcribes phrases one at a time, in order, while capture goes on.
+                val worker = launch(Dispatchers.Default) {
+                    engineLoad.join()
+                    val engine = engineForSession(s)
+                    if (engine == null) {
+                        fail(_session.value as? SessionState.Failed ?: SessionState.Failed("The recognition model is not available.", null))
+                    }
+                    val vad = ModelCatalog.vadFile(modelsDir)
+                    for (phrase in phrases) {
+                        try {
+                            if (engine == null || cancelled || failure.get() != null) continue
+                            val result = BatchTranscriber(engine) { SileroSegmenter(vad, maxSegmentSec = engine.model.maxInputSec ?: 28f) }
+                                .transcribe(phrase.file, { cancelled }) {}
+                            if (cancelled) continue
+                            deliverBatch(result.text, s)
+                            typed += result.text
+                            sent.incrementAndGet()
+                            log.add("Phrase transcribed: ${"%.1f".format(result.audioSec)} s in ${"%.1f".format(result.processingSec)} s")
+                        } catch (e: NoSpeechException) {
+                            log.add("Phrase skipped: no speech detected")
+                        } catch (e: BatchTranscriber.CancellationRequested) {
+                            // Discarded with the rest of the session.
+                        } catch (e: RecognitionException) {
+                            fail(SessionState.Failed(e.message ?: "Transcription failed", "Try again, or choose another model in Settings."))
+                        } catch (e: OutOfMemoryError) {
+                            fail(SessionState.Failed("The phone ran out of memory while transcribing.", "Use a smaller model or shorter phrases."))
+                        } finally {
+                            phrase.file.delete()
+                            pending.decrementAndGet()
+                        }
+                    }
+                }
+
+                _session.value = SessionState.Recording(0.0, -60f, maxSec, pauseSec, keepListening = true)
+                val source = inputSource(16_000)
+                val sr = source.sampleRate
+                val maxPhraseSamples = maxSec.toLong() * sr
+                speech = SileroSpeechDetector(ModelCatalog.vadFile(modelsDir), sr)
+                var pauses = PauseDetector(pauseSec)
+                var phraseHasSpeech = false
+                var phraseIndex = 0
+                fun newWriter() = try {
+                    WavWriter(File(recordingsDir, "rec-${System.currentTimeMillis()}-${phraseIndex++}.wav"), sr)
+                } catch (e: IOException) {
+                    throw AudioCaptureException("Could not create the recording file: ${e.message}", e)
+                }
+                // Hands the current phrase to the worker (or drops it if silent) and starts the next.
+                fun endPhrase(why: String, startNext: Boolean) {
+                    val w = writer ?: return
+                    writer = null
+                    try {
+                        w.close()
+                    } catch (e: IOException) {
+                        throw AudioCaptureException("Could not finish the recording file: ${e.message}", e)
+                    }
+                    if (phraseHasSpeech && !cancelled) {
+                        log.add("Phrase recorded: ${"%.1f".format(w.durationSec)} s ($why)")
+                        pending.incrementAndGet()
+                        phrases.trySend(w)
+                    } else {
+                        w.file.delete()
+                    }
+                    phraseHasSpeech = false
+                    pauses = PauseDetector(pauseSec)
+                    if (startNext) writer = newWriter()
+                }
+
+                log.add("Listening started (${source.description}), phrases end after a ${"%.1f".format(pauseSec)} s pause")
+                writer = newWriter()
+                withContext(Dispatchers.IO) {
+                    source.run(sr / 10, { recording && !cancelled }) { frame ->
+                        val w = writer ?: return@run
+                        try {
+                            w.write(frame.samples)
+                        } catch (e: IOException) {
+                            throw AudioCaptureException("Recording stopped: storage is full or unavailable (${e.message})", e)
+                        }
+                        listenedSec += frame.samples.size.toDouble() / sr
+                        val isSpeech = speech!!.accept(frame.samples)
+                        if (isSpeech) phraseHasSpeech = true
+                        when {
+                            pauses.update(w.durationSec, isSpeech) -> endPhrase("pause detected", startNext = true)
+                            w.samplesWritten >= maxPhraseSamples -> endPhrase("limit reached", startNext = true)
+                        }
+                        if (failure.get() == null) {
+                            _session.value = SessionState.Recording(
+                                listenedSec, AudioRecorder.levelDb(frame.samples), maxSec, pauseSec,
+                                keepListening = true, phrasesSent = sent.get(), phrasesPending = pending.get(),
+                            )
+                        }
+                    }
+                }
+                speech?.close()
+                speech = null
+                endPhrase("stopped", startNext = false)
+                recording = false
+                phrases.close()
+                if (cancelled) {
+                    log.add("Listening cancelled; untyped phrases discarded")
+                } else if (failure.get() == null && pending.get() > 0) {
+                    _session.value = SessionState.Transcribing(0f, sent.get(), listenedSec)
+                }
+                worker.join()
+                log.add("Listening stopped: ${"%.1f".format(listenedSec)} s, ${sent.get()} phrases typed")
+                _session.value = failure.get() ?: SessionState.Idle
+                if (typed.isNotEmpty()) {
+                    _lastSession.value = LastSession(
+                        BatchTranscriber.joinSegments(typed.toList()),
+                        "%.1f s listened · %d phrases typed".format(listenedSec, sent.get()),
+                    )
+                }
+            } catch (e: AudioCaptureException) {
+                cancelled = true
+                _session.value = SessionState.Failed(e.message ?: "Recording failed", hintFor(e.message ?: ""))
+            } finally {
+                phrases.close()
+                speech?.close()
+                try {
+                    writer?.close()
+                } catch (_: IOException) {
+                }
+                recording = false
+                // Retention policy: no phrase audio outlives the session.
+                recordingsDir.listFiles()?.forEach { it.delete() }
             }
         }
     }
