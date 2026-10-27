@@ -58,6 +58,10 @@ android {
         compose = true
         buildConfig = true
     }
+    packaging {
+        // sherpa-onnx and onnxruntime-android both ship ONNX Runtime 1.28.x; one copy serves both.
+        jniLibs.pickFirsts += "**/libonnxruntime.so"
+    }
 }
 
 dependencies {
@@ -76,7 +80,13 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     // Prebuilt sherpa-onnx (Apache-2.0). Fetch with scripts/fetch-deps.sh.
     implementation(files("libs/sherpa-onnx-2.0.0.aar"))
+    // ONNX Runtime Java API (MIT) for ASR4ALL, which sherpa-onnx doesn't support. Same minor
+    // version as the runtime inside sherpa-onnx, so the shared libonnxruntime.so fits both.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    // Desktop ONNX Runtime and org.json for running the ASR4ALL engine in JVM tests.
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.28.0")
+    testImplementation("org.json:json:20240303")
 }

@@ -19,6 +19,8 @@ class AudioRecorder(
     fun record(
         file: File,
         isActive: () -> Boolean,
+        /** Sees every captured block, on the capture thread, after it is written. */
+        onSamples: (FloatArray) -> Unit = {},
         onProgress: (elapsedSec: Double, levelDb: Float) -> Unit,
     ): RecordingResult {
         val maxSamples = maxDurationSec.toLong() * source.sampleRate
@@ -36,6 +38,7 @@ class AudioRecorder(
                     throw AudioCaptureException("Recording stopped: storage is full or unavailable (${e.message})", e)
                 }
                 if (writer.samplesWritten >= maxSamples) limit = true
+                onSamples(frame.samples)
                 onProgress(writer.durationSec, levelDb(frame.samples))
             }
         } finally {

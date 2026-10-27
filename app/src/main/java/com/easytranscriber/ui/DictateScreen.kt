@@ -313,7 +313,12 @@ private fun TranscriptArea(
             Spacer(Modifier.height(16.dp))
             LinearProgressIndicator(progress = { ((session.levelDb + 60f) / 60f).coerceIn(0f, 1f) }, modifier = Modifier.width(200.dp))
             Spacer(Modifier.height(16.dp))
-            Text("Recording. Tap stop when you're done.", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                session.stopsAfterPauseSec?.let { "Recording. Transcription starts when you pause for ${formatSeconds(it)}, or tap stop." }
+                    ?: "Recording. Tap stop when you're done.",
+                style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
+            )
         }
         is SessionState.Transcribing -> Centered {
             Text("Transcribing ${formatTime(session.recordedSec)} of audio", style = MaterialTheme.typography.titleMedium)
@@ -453,3 +458,6 @@ private fun formatTime(sec: Double): String {
     val s = sec.toInt()
     return "%d:%02d".format(s / 60, s % 60)
 }
+
+/** "2 s", "1.5 s". */
+fun formatSeconds(sec: Double): String = if (sec % 1.0 == 0.0) "%.0f s".format(sec) else "%.1f s".format(sec)

@@ -21,7 +21,17 @@ ALL=(sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-80ms-int8
      sherpa-onnx-nemo-streaming-fast-conformer-transducer-en-480ms-int8
      sherpa-onnx-streaming-zipformer-en-2023-06-26
      sherpa-onnx-moonshine-base-en-quantized-2026-02-27
+     asr4all-s asr4all-m asr4all-l
      sherpa-onnx-whisper-base sherpa-onnx-whisper-tiny silero-vad)
+
+# ASR4ALL is published as separate files on Hugging Face; revisions match the app's catalog.
+asr4all_revision() {
+  case "$1" in
+    asr4all-s) echo 30cb61728e7a0e333422fc3c8902bf2410e7df01 ;;
+    asr4all-m) echo 9b1506ca35ebfdc04be6b87868cc2f95eff10210 ;;
+    asr4all-l) echo f9c5157d220fc3cfc71b97baf9970325ff7d4ae5 ;;
+  esac
+}
 
 if [ $# -eq 0 ]; then MODELS=("${RECOMMENDED[@]}")
 elif [ "$1" = all ]; then MODELS=("${ALL[@]}")
@@ -37,6 +47,7 @@ files_for() {
     sherpa-onnx-whisper-base) echo base-encoder.int8.onnx base-decoder.int8.onnx base-tokens.txt ;;
     sherpa-onnx-whisper-tiny) echo tiny-encoder.int8.onnx tiny-decoder.int8.onnx tiny-tokens.txt ;;
     silero-vad) echo silero_vad.onnx ;;
+    asr4all-*) echo asr4all.onnx.data stream_c256r32.onnx pcec_c64.onnx pcec_c64_flush.onnx metadata.json ;;
     *) echo encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt ;;
   esac
 }
@@ -47,6 +58,12 @@ for m in "${MODELS[@]}"; do
     echo "Downloading $m"
     if [ "$m" = silero-vad ]; then
       mkdir -p models/silero-vad && curl -fL -o models/silero-vad/silero_vad.onnx "$BASE/silero_vad.onnx"
+    elif [[ "$m" == asr4all-* ]]; then
+      mkdir -p "models/$m.tmp"
+      for f in $(files_for "$m"); do
+        curl -fL -o "models/$m.tmp/$f" "https://huggingface.co/futo-org/$m/resolve/$(asr4all_revision "$m")/onnx/$f"
+      done
+      mv "models/$m.tmp" "models/$m"
     else
       curl -fL "$BASE/$m.tar.bz2" | tar xj -C models
     fi

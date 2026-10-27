@@ -4,7 +4,8 @@ local.properties
 .idea/
 *.iml
 .kotlin/
-models/
+# Downloaded models (scripts/install-models.sh); anchored so the source package com.easytranscriber.models is tracked.
+/models/
 app/libs/*.aar
 keystore/
 keystore.properties

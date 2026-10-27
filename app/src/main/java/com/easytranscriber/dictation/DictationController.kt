@@ -11,6 +11,8 @@ import com.easytranscriber.audio.MicrophoneAudioSource
 import com.easytranscriber.audio.WavFileAudioSource
 import com.easytranscriber.batch.BatchTranscriber
 import com.easytranscriber.batch.NoSpeechException
+import com.easytranscriber.batch.PauseDetector
+import com.easytranscriber.batch.SileroSpeechDetector
 import com.easytranscriber.batch.SileroSegmenter
 import com.easytranscriber.bluetooth.BluetoothHidManager
 import com.easytranscriber.bluetooth.HidConnectionState
@@ -25,8 +27,10 @@ import com.easytranscriber.hid.UsQwertyLayout
 import com.easytranscriber.output.DeliveryQueue
 import com.easytranscriber.pipeline.StreamingRecognitionPipeline
 import com.easytranscriber.models.ModelDownloader
+import com.easytranscriber.recognition.Asr4AllEngine
 import com.easytranscriber.recognition.InstalledModel
 import com.easytranscriber.recognition.ModelEntry
+import com.easytranscriber.recognition.ModelArchitecture
 import com.easytranscriber.recognition.ModelCatalog
 import com.easytranscriber.recognition.RecognitionEngine
 import com.easytranscriber.recognition.RecognitionException
@@ -76,7 +80,8 @@ sealed interface SessionState {
         val finishing: Boolean,
     ) : SessionState
 
-    data class Recording(val elapsedSec: Double, val levelDb: Float, val maxSec: Int) : SessionState
+    /** [stopsAfterPauseSec]: the recording ends by itself after a pause this long (null = only by button). */
+    data class Recording(val elapsedSec: Double, val levelDb: Float, val maxSec: Int, val stopsAfterPauseSec: Double? = null) : SessionState
 
     data class Transcribing(val fraction: Float, val segmentsDone: Int, val recordedSec: Double) : SessionState
 
@@ -353,6 +358,8 @@ class DictationController(
             // Memory sampler for the session; must be cancelled on every exit path, otherwise this
             // job never completes and canStart() refuses all later sessions.
             var sampler: Job? = null
+            val pauseSec = if (s.autoStopOnPause) s.pauseToStopMs / 1000.0 else null
+            var speech: SileroSpeechDetector? = null
             try {
                 // Load the model while the user is speaking.
                 val engineLoad = launch { prepareEngine(s) }
@@ -363,21 +370,46 @@ class DictationController(
                         kotlinx.coroutines.delay(2_000)
                     }
                 }
-                _session.value = SessionState.Recording(0.0, -60f, maxSec)
+                _session.value = SessionState.Recording(0.0, -60f, maxSec, pauseSec)
                 val source = inputSource(16_000)
-                log.add("Recording started (${source.description})")
+                // Auto-stop: Silero VAD watches the live audio; a pause after speech ends the recording.
+                speech = pauseSec?.let { SileroSpeechDetector(ModelCatalog.vadFile(modelsDir), source.sampleRate) }
+                val pauses = pauseSec?.let(::PauseDetector)
+                var heardSamples = 0L
+                var stoppedOnPause = false
+                log.add("Recording started (${source.description})${pauseSec?.let { ", stops after a ${"%.1f".format(it)} s pause" } ?: ""}")
                 val rec = withContext(Dispatchers.IO) {
-                    AudioRecorder(source, maxSec).record(file, { recording && !cancelled }) { sec, db ->
-                        _session.value = SessionState.Recording(sec, db, maxSec)
+                    AudioRecorder(source, maxSec).record(
+                        file,
+                        isActive = { recording && !cancelled },
+                        onSamples = { samples ->
+                            val detector = speech
+                            if (detector != null && pauses != null && recording) {
+                                heardSamples += samples.size
+                                if (pauses.update(heardSamples.toDouble() / source.sampleRate, detector.accept(samples))) {
+                                    stoppedOnPause = true
+                                    recording = false
+                                }
+                            }
+                        },
+                    ) { sec, db ->
+                        _session.value = SessionState.Recording(sec, db, maxSec, pauseSec)
                     }
                 }
+                speech?.close()
+                speech = null
                 recording = false
                 if (cancelled) {
                     log.add("Recording cancelled; audio discarded")
                     _session.value = SessionState.Idle
                     return@launch
                 }
-                log.add("Recording stopped: ${"%.1f".format(rec.durationSec)} s${if (rec.reachedLimit) " (limit reached)" else ""}")
+                val why = when {
+                    rec.reachedLimit -> " (limit reached)"
+                    stoppedOnPause -> " (pause detected)"
+                    else -> ""
+                }
+                log.add("Recording stopped: ${"%.1f".format(rec.durationSec)} s$why")
                 _session.value = SessionState.Transcribing(0f, 0, rec.durationSec)
                 engineLoad.join()
                 val engine = engineForSession(s) ?: return@launch
@@ -419,6 +451,7 @@ class DictationController(
                 _session.value = SessionState.Failed("The phone ran out of memory while transcribing.", "Use a smaller model or shorter recordings.")
             } finally {
                 sampler?.cancel()
+                speech?.close()
                 recording = false
                 // Retention policy: recorded audio is deleted as soon as transcription ends,
                 // whether it succeeded, failed or was cancelled.
@@ -486,11 +519,13 @@ class DictationController(
         loadedEngine = null
         loadedKey = null
         _engine.value = EngineState.Loading(installed.entry.shortName)
-        val e: RecognitionEngine = if (TranscriptionMode.REAL_TIME in installed.entry.modes) {
-            SherpaOnnxStreamingEngine(installed, numThreads = s.threads)
-        } else {
-            val lang = if (installed.entry.architecture == com.easytranscriber.recognition.ModelArchitecture.WHISPER) s.batchLanguage else "en"
-            SherpaOnnxOfflineEngine(installed, numThreads = s.threads, language = lang)
+        val e: RecognitionEngine = when {
+            TranscriptionMode.REAL_TIME in installed.entry.modes -> SherpaOnnxStreamingEngine(installed, numThreads = s.threads)
+            installed.entry.architecture == ModelArchitecture.ASR4ALL -> Asr4AllEngine(installed, numThreads = s.threads)
+            else -> {
+                val lang = if (installed.entry.architecture == ModelArchitecture.WHISPER) s.batchLanguage else "en"
+                SherpaOnnxOfflineEngine(installed, numThreads = s.threads, language = lang)
+            }
         }
         val t0 = System.nanoTime()
         return try {

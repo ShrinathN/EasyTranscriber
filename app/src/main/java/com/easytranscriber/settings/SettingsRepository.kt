@@ -33,6 +33,10 @@ data class AppSettings(
     /** Whisper language code; "" = detect. Ignored by single-language models. */
     val batchLanguage: String = "en",
     val reviewBeforeSending: Boolean = true,
+    /** Record first: stop recording and start transcribing once the speaker pauses. */
+    val autoStopOnPause: Boolean = true,
+    /** Record first: how long a pause (after speech) ends the recording. */
+    val pauseToStopMs: Int = 2_000,
     val spokenPunctuation: Boolean = true,
     val autoCapitalize: Boolean = true,
     val spaceBetweenDictations: Boolean = true,
@@ -53,6 +57,8 @@ class SettingsRepository(private val context: Context) {
         val BATCH_MODEL = stringPreferencesKey("batch_model")
         val BATCH_LANGUAGE = stringPreferencesKey("batch_language")
         val REVIEW = booleanPreferencesKey("review_before_sending")
+        val AUTO_STOP = booleanPreferencesKey("auto_stop_on_pause")
+        val PAUSE_TO_STOP = intPreferencesKey("pause_to_stop_ms")
         val SPOKEN_PUNCTUATION = booleanPreferencesKey("spoken_punctuation")
         val AUTO_CAPITALIZE = booleanPreferencesKey("auto_capitalize")
         val SPACE_BETWEEN = booleanPreferencesKey("space_between_dictations")
@@ -75,6 +81,8 @@ class SettingsRepository(private val context: Context) {
             p[Keys.BATCH_MODEL] = next.batchModelId
             p[Keys.BATCH_LANGUAGE] = next.batchLanguage
             p[Keys.REVIEW] = next.reviewBeforeSending
+            p[Keys.AUTO_STOP] = next.autoStopOnPause
+            p[Keys.PAUSE_TO_STOP] = next.pauseToStopMs
             p[Keys.SPOKEN_PUNCTUATION] = next.spokenPunctuation
             p[Keys.AUTO_CAPITALIZE] = next.autoCapitalize
             p[Keys.SPACE_BETWEEN] = next.spaceBetweenDictations
@@ -94,6 +102,8 @@ class SettingsRepository(private val context: Context) {
             batchModelId = p[Keys.BATCH_MODEL]?.takeIf { validFor(it, TranscriptionMode.RECORD_THEN_TRANSCRIBE) } ?: d.batchModelId,
             batchLanguage = p[Keys.BATCH_LANGUAGE] ?: d.batchLanguage,
             reviewBeforeSending = p[Keys.REVIEW] ?: d.reviewBeforeSending,
+            autoStopOnPause = p[Keys.AUTO_STOP] ?: d.autoStopOnPause,
+            pauseToStopMs = p[Keys.PAUSE_TO_STOP]?.takeIf { it in 500..10_000 } ?: d.pauseToStopMs,
             spokenPunctuation = p[Keys.SPOKEN_PUNCTUATION] ?: d.spokenPunctuation,
             autoCapitalize = p[Keys.AUTO_CAPITALIZE] ?: d.autoCapitalize,
             spaceBetweenDictations = p[Keys.SPACE_BETWEEN] ?: d.spaceBetweenDictations,

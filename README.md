@@ -46,7 +46,7 @@ software to install on the receiving device.
 - **Works as a real Bluetooth keyboard.** Pair the phone with a computer or tablet and dictated text is typed into whatever text field is focused. The receiving device needs no app or driver.
 - **Two dictation modes:**
   - **Live typing:** words appear on the other device *while you are still speaking*.
-  - **Record first:** speak freely, then the whole recording is transcribed with punctuation and capitalization. You can review and edit the text before it is sent.
+  - **Record first:** speak freely, then the whole recording is transcribed with punctuation and capitalization. Recording ends by itself when you pause (or tap stop, if you prefer), and you can review and edit the text before it is sent.
 - **Fully offline recognition.** Models are downloaded once inside the app; after that no internet connection is needed.
 - **Choice of speech models**, each listed with its size, languages and license.
 - **Spoken punctuation** in live typing ("comma", "period", "new line", …) and automatic sentence capitalization.
@@ -72,7 +72,7 @@ flowchart LR
     Commit --> Format["Formatting<br/>(spacing, spoken punctuation,<br/>capitalization)"]
     Mode -->|Record first| Wav["Temporary recording<br/>(deleted after use)"]
     Wav --> VAD["Speech detector<br/>(Silero VAD)"]
-    VAD --> Batch["Batch recognizer<br/>(Moonshine / Whisper)"]
+    VAD --> Batch["Batch recognizer<br/>(ASR4ALL / Moonshine / Whisper)"]
     Batch --> Review["Optional review & edit"]
     Format --> Queue["Delivery queue"]
     Review --> Queue
@@ -82,7 +82,7 @@ flowchart LR
 
 1. **Recognition:**
    - **Live typing** feeds the microphone to a *streaming* model in 50 ms chunks. The model keeps its state between chunks, so words are recognized as you speak; nothing waits for the end of the sentence.
-   - **Record first** saves audio to a temporary file. A speech detector splits it at pauses, and each piece is transcribed by a model that sees the whole utterance, which gives better punctuation and accuracy. The recording is deleted as soon as transcription finishes, fails or is cancelled.
+   - **Record first** saves audio to a temporary file. While you speak, a speech detector listens for a pause (2 s by default, adjustable or off in Settings) and then ends the recording. The detector also splits the recording at pauses, and each piece is transcribed by a model that sees the whole utterance, which gives better punctuation and accuracy. The recording is deleted as soon as transcription finishes, fails or is cancelled.
 2. **Commit policy (live typing):** a recognizer may still revise the word you're saying, so a word is only sent once it's stable: either the next word has started or it hasn't changed for a short moment. If the recognizer later extends a word ("un" → "unbelievable"), only the missing letters are typed.
 3. **Keyboard output:** Android's Bluetooth HID Device API (`BluetoothHidDevice`) makes the phone appear as a standard keyboard. Text is converted to US-QWERTY key presses and typed in order. Both modes share the same delivery queue.
 
@@ -92,7 +92,7 @@ flowchart LR
 - The manufacturer must not have disabled the Bluetooth **HID Device** role. Most phones have it enabled.
   - **Motorola:** it's off by default. Enable it in *Developer options*, then turn Bluetooth off and on again.
   - If the role is unavailable, the app tells you; it won't fail silently.
-- About 150–400 MB of free storage for models, and an internet connection for the one-time model download.
+- About 150–500 MB of free storage for models, and an internet connection for the one-time model download.
 
 **Receiving device**
 - Anything that accepts a Bluetooth keyboard: Windows, macOS, Linux, ChromeOS, Android, iPadOS.
@@ -101,7 +101,7 @@ flowchart LR
 
 ## Getting started
 1. **Install** the APK on your phone (see [Building from source](#building-from-source), or a release download).
-2. **Download a model.** On first launch the Dictate tab offers the recommended model. Tap **Download** and keep the app open until it finishes. More models are in **Settings**.
+2. **Download a model.** On first launch the Dictate tab offers the recommended model. Tap **Download** and keep the app open until it finishes. More models are in **Settings → Models**.
 3. **Pair with your computer:**
    - Open the **Keyboard** tab and tap **Pair a new device**.
    - On the computer, open its Bluetooth settings and pair with your phone.
@@ -114,7 +114,7 @@ flowchart LR
 |---|---|
 | **Dictate** | Choose *Live typing* or *Record first* and tap the microphone to start or stop. Shows the transcript, delivery progress and any connection problems. |
 | **Keyboard** | Turn the Bluetooth keyboard on or off, pair a new device, connect to a paired one, and send a test line. |
-| **Settings** | Download or delete models, choose the language (Whisper), review before sending, live-typing speed vs. accuracy, spoken punctuation, capitalization and typing speed. |
+| **Settings** | **Models** (download, choose or delete models for each mode; language for Whisper), whether *Record first* stops by itself after a pause, review before sending, live-typing speed vs. accuracy, spoken punctuation, capitalization and typing speed. |
 
 ### Spoken punctuation (Live typing)
 | Say | Types |
@@ -148,7 +148,8 @@ Text is never retyped automatically, so you won't get unexpected duplicates.
 ## Privacy
 - Speech is recognized **only on the phone**. Audio and transcripts are never uploaded.
 - The internet permission is used **only** to download the models you choose, from the
-  [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases) on GitHub. Every downloaded file is checked against a pinned SHA-256 checksum before use.
+  [sherpa-onnx releases](https://github.com/k2-fsa/sherpa-onnx/releases) on GitHub or, for ASR4ALL,
+  [FUTO's model pages](https://huggingface.co/futo-org) on Hugging Face (pinned revisions). Every downloaded file is checked against a pinned SHA-256 checksum before use.
 - Recordings (*Record first*) are temporary and deleted as soon as transcription ends. Nothing is kept after a restart.
 - No analytics, no tracking, no accounts.
 - The only output is keystrokes sent to the device **you** connected.
@@ -175,7 +176,7 @@ Detailed measurements and methods are in the [engineering reports](#engineering-
   - Whisper models (Record first) recognize other languages, including Hindi. Text in non-Latin scripts can be read and edited in review but can't be typed with the US layout.
 - **No automatic punctuation in live typing.** Use spoken punctuation, or *Record first* for punctuated text.
 - **Proper nouns:** names aren't capitalized automatically in live typing.
-- **Model downloads** need a connection and about 100–210 MB each; recognition itself is offline.
+- **Model downloads** need a connection and about 100–375 MB each; recognition itself is offline.
 - **Phone compatibility:** some manufacturers disable the Bluetooth HID Device role (see [Requirements](#requirements)).
 
 ## Building from source
@@ -214,14 +215,15 @@ app/src/main/java/com/easytranscriber/
 ├── models/        model download, extraction and checksum verification
 ├── output/        delivery queue shared by both modes
 ├── pipeline/      streaming pipeline (bounded queue, inference thread, metrics)
-├── recognition/   engine interface, sherpa-onnx adapters, model catalog
+├── recognition/   engine interface, sherpa-onnx and ASR4ALL (ONNX Runtime) engines, model catalog
 ├── settings/      persisted settings (DataStore)
 ├── transcript/    commit policy and text formatting
 └── ui/            Jetpack Compose screens
 ```
-63 JVM unit tests cover key encoding, typing and failure accounting, text formatting, the commit
-policy, the delivery queue (including disconnects), WAV handling, batch transcription and model
-installation.
+73 JVM unit tests cover key encoding, typing and failure accounting, text formatting, the commit
+policy, the delivery queue (including disconnects), WAV handling, batch transcription, pause
+detection, ASR4ALL output rendering and model installation. One ASR4ALL test runs a real model and
+is skipped unless `ASR4ALL_DIR` and `ASR4ALL_WAVS` are set (see `Asr4AllEngineTest`).
 
 ## Troubleshooting
 | Problem | What to do |
@@ -240,8 +242,9 @@ installation.
 | [Kotlin](https://kotlinlang.org/) and [Jetpack Compose](https://developer.android.com/jetpack/compose) (Material 3) | App and UI |
 | Android `BluetoothHidDevice` API | Acting as a Bluetooth keyboard |
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 2.0.0 with [ONNX Runtime](https://onnxruntime.ai/) | On-device speech recognition and voice activity detection |
-| NVIDIA NeMo FastConformer (streaming, 80 ms) | Live typing model |
-| Moonshine base (English), OpenAI Whisper tiny/base | Record first models |
+| ONNX Runtime Java API (`onnxruntime-android` 1.28) | Running ASR4ALL, which sherpa-onnx doesn't support |
+| NVIDIA NeMo FastConformer (streaming, 80 ms and 480 ms) | Live typing models |
+| ASR4ALL small/medium/large (English), Moonshine base (English), OpenAI Whisper tiny/base | Record first models |
 | Silero VAD | Splitting recordings at pauses |
 | Jetpack DataStore | Settings |
 | Apache Commons Compress | Extracting downloaded model archives |
@@ -256,7 +259,7 @@ Third-party libraries and speech models keep their own licenses, listed below an
 | Software | License |
 |---|---|
 | sherpa-onnx | Apache-2.0 |
-| ONNX Runtime (inside the sherpa-onnx library) | MIT |
+| ONNX Runtime (shared by sherpa-onnx and the ONNX Runtime Java API) | MIT |
 | AndroidX, Jetpack Compose, Material icons | Apache-2.0 |
 | Kotlin standard library, kotlinx.coroutines | Apache-2.0 |
 | Apache Commons Compress | Apache-2.0 |
@@ -264,7 +267,8 @@ Third-party libraries and speech models keep their own licenses, listed below an
 **Speech models** (downloaded by the user at runtime, not included in the app)
 | Model | Author | License |
 |---|---|---|
-| NeMo FastConformer streaming transducer, 80 ms (`stt_en_fastconformer_hybrid_large_streaming_multi`), int8 ONNX conversion by sherpa-onnx | NVIDIA | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) |
+| NeMo FastConformer streaming transducer, 80 ms and 480 ms (`stt_en_fastconformer_hybrid_large_streaming_multi`), int8 ONNX conversion by sherpa-onnx | NVIDIA | [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) |
+| ASR4ALL small / medium / large, English (ONNX release) | FUTO | [FUTO Model Weights License 1.0](https://huggingface.co/futo-org/asr4all-s/blob/main/LICENSE) (restricted use; dictation and personal use permitted) |
 | Moonshine base, English | Moonshine AI (Useful Sensors) | MIT (English models) |
 | Whisper tiny / base, int8 ONNX conversion by sherpa-onnx | OpenAI | MIT |
 | Silero VAD | Silero Team | MIT |

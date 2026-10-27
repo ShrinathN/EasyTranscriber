@@ -53,6 +53,8 @@ class SherpaOnnxOfflineEngine(
             )
             ModelArchitecture.TRANSDUCER ->
                 throw RecognitionException("${model.displayName} is a streaming model")
+            ModelArchitecture.ASR4ALL ->
+                throw RecognitionException("${model.displayName} runs on Asr4AllEngine, not sherpa-onnx")
         }
         val config = OfflineRecognizerConfig(
             featConfig = FeatureConfig(sampleRate = sampleRate, featureDim = 80, dither = 0f),

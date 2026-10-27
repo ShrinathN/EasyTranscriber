@@ -2,7 +2,7 @@ package com.easytranscriber.recognition
 
 import java.io.File
 
-enum class ModelArchitecture { TRANSDUCER, WHISPER, MOONSHINE }
+enum class ModelArchitecture { TRANSDUCER, WHISPER, MOONSHINE, ASR4ALL }
 
 /** Casing of raw recognizer output; uppercase-only models are lowercased before formatting. */
 enum class OutputCase { LOWER, UPPER, MIXED }
@@ -35,7 +35,9 @@ data class ModelEntry(
     val measured: String? = null,
     /** Where the app downloads the files from (a .tar.bz2 release archive). */
     val archiveUrl: String = "",
-    /** Download size of [archiveUrl] in bytes. */
+    /** Used instead of [archiveUrl] for models published as separate files: file name -> URL. */
+    val fileUrls: Map<String, String> = emptyMap(),
+    /** Download size of [archiveUrl] (or all of [fileUrls]) in bytes. */
     val downloadBytes: Long = 0,
     /** Expected SHA-256 of every file in [files], verified after download. */
     val sha256: Map<String, String> = emptyMap(),
@@ -63,6 +65,52 @@ object ModelCatalog {
         "joiner" to "joiner.int8.onnx",
         "tokens" to "tokens.txt",
     )
+    /**
+     * An ASR4ALL (FUTO) ONNX release, pinned to a Hugging Face revision. Only the most accurate
+     * streaming tier (c256r32) and its punctuation pass (PCEC c64) are downloaded; every graph
+     * reads its weights from the shared asr4all.onnx.data.
+     * [sha256] lists the files in the order: weights, stream, pcec, pcecFlush, metadata.
+     */
+    private fun asr4all(
+        size: String,
+        label: String,
+        revision: String,
+        downloadBytes: Long,
+        sha256: List<String>,
+        notes: String,
+        measured: String?,
+    ): ModelEntry {
+        val files = mapOf(
+            "weights" to "asr4all.onnx.data",
+            "stream" to "stream_c256r32.onnx",
+            "pcec" to "pcec_c64.onnx",
+            "pcecFlush" to "pcec_c64_flush.onnx",
+            "metadata" to "metadata.json",
+        )
+        val repo = "https://huggingface.co/futo-org/asr4all-$size"
+        return ModelEntry(
+            id = "asr4all-$size",
+            displayName = "ASR4ALL $label (English)",
+            shortName = "ASR4ALL ${size.uppercase()}",
+            engineName = "onnxruntime",
+            architecture = ModelArchitecture.ASR4ALL,
+            languages = listOf(ENGLISH),
+            modes = setOf(TranscriptionMode.RECORD_THEN_TRANSCRIBE),
+            files = files,
+            license = "FUTO Model Weights License 1.0 (restricted use; dictation and personal use permitted)",
+            sourceUrl = repo,
+            fileUrls = files.values.associateWith { "$repo/resolve/$revision/onnx/$it" },
+            downloadBytes = downloadBytes,
+            sha256 = files.values.zip(sha256).toMap(),
+            notes = notes,
+            outputCase = OutputCase.MIXED,
+            punctuates = true,
+            // No hard limit (it is a streaming model); longer segments give punctuation more context.
+            maxInputSec = 60f,
+            measured = measured,
+        )
+    }
+
     private val WHISPER_LANGUAGES = listOf(
         ENGLISH, HINDI, AUTO,
         Language("es", "Spanish"), Language("fr", "French"), Language("de", "German"),
@@ -119,8 +167,7 @@ object ModelCatalog {
                 "joiner.int8.onnx" to "d2d8e7290a6a8245a83ed211aa0dd8cdf8effb8a7c64fe392399561111b52f30",
                 "tokens.txt" to "618dc110fc2213886b52e063ff42329bbdf37a266ca7705184090fa5f39f3131",
             ),
-            developerOnly = true,
-            notes = "More lookahead; about twice the latency of the 80 ms variant.",
+            notes = "Longer lookahead window; about twice the latency of the 80 ms variant.",
             outputCase = OutputCase.LOWER,
             punctuates = false,
             measured = "Word latency p50 ≈ 440 ms, RAM ≈ 315 MB (2 threads)",
@@ -181,6 +228,42 @@ object ModelCatalog {
             outputCase = OutputCase.MIXED,
             punctuates = true,
             maxInputSec = 28f,
+        ),
+        asr4all(
+            size = "s", label = "small", revision = "30cb61728e7a0e333422fc3c8902bf2410e7df01", downloadBytes = 109_004_603L,
+            sha256 = listOf(
+                "9e6b8b118bbbc0139ecd788825c1d993d82653db4ab63467476606bd7dc271e0",
+                "2510876e2be3dda4ea654b88295ea607e87c4b1d6fa446d275340e599d766324",
+                "ecd0fe45a97df4d55cd93e8370aa7247c0f6624151e9bbf6a9354f43f26e3e96",
+                "b6fe820e89d414c570db9b5c568915e5ae48961c205340617d54902fcc3388cd",
+                "b73014a78a53883202752c6c451eb8aa4bd691e8eb96d7de083bb0c3b2894926",
+            ),
+            notes = "Built for dictation; punctuation and capitalization included. Fastest ASR4ALL.",
+            measured = null,
+        ),
+        asr4all(
+            size = "m", label = "medium", revision = "9b1506ca35ebfdc04be6b87868cc2f95eff10210", downloadBytes = 215_177_060L,
+            sha256 = listOf(
+                "f915ab3cb21b0012b8c65214d8920b349ae8ddaa133511407b605dd8d6ae54a6",
+                "046621e19dbf0a482b3a8ea17c8adfe760e6829de4b36fadb002300c1c4b3a05",
+                "5550c150a8935127c191d0ee3d65607c32fbd41b34ba10b9ad71d9189f56a35b",
+                "85089b3f00e874766f56646aaba7d47f73f3529d2321e59313fc7fcef241356e",
+                "e32f62550eaf2de70fadf7bd043ee96e1e34a9c3cb74ca968e5d5f258538edc5",
+            ),
+            notes = "Built for dictation; punctuation and capitalization included. Balanced speed and accuracy.",
+            measured = null,
+        ),
+        asr4all(
+            size = "l", label = "large", revision = "f9c5157d220fc3cfc71b97baf9970325ff7d4ae5", downloadBytes = 374_791_292L,
+            sha256 = listOf(
+                "4d03c883a8947e70a55de6e56705b153639739ae6c22a2707193be995143c281",
+                "1e44a50a5b15ea0599e89c662eacb1aa40a4d91203e419b47aad01b33361d793",
+                "2a8a312255ca284021b7a2d63907ea52668a8f4ecccbaeb17f1d3233e8812bd6",
+                "25ef88e1370436874c7777c8a525e03690cdc7fc9527f10d975147cb7cfa7229",
+                "63c6b2b00249d904e40092483626eb1e4578cea0753845a2c2a2fe9bb4ff7708",
+            ),
+            notes = "Built for dictation; punctuation and capitalization included. Most accurate; slowest and needs the most memory.",
+            measured = null,
         ),
         ModelEntry(
             id = "sherpa-onnx-whisper-base",

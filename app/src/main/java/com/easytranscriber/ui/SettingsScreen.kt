@@ -1,5 +1,6 @@
 package com.easytranscriber.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,9 +10,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
@@ -19,6 +23,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -27,9 +34,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.easytranscriber.BuildConfig
 import com.easytranscriber.dictation.SessionState
 import com.easytranscriber.dictation.isActive
-import com.easytranscriber.recognition.InstalledModel
-import com.easytranscriber.recognition.ModelArchitecture
-import com.easytranscriber.recognition.ModelCatalog
 import com.easytranscriber.recognition.TranscriptionMode
 import com.easytranscriber.settings.AppSettings
 import com.easytranscriber.settings.TypingSpeed
@@ -40,20 +44,19 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
     val s by vm.settings.collectAsStateWithLifecycle()
     val models by vm.models.collectAsStateWithLifecycle()
     val session by vm.session.collectAsStateWithLifecycle()
-    val downloads by vm.downloads.collectAsStateWithLifecycle()
     val c = vm.controller
 
     val locked = session.isActive() || session is SessionState.Review
     val update: ((AppSettings) -> AppSettings) -> Unit = c::updateSettings
-    val visible = ModelCatalog.visible(includeDeveloper = BuildConfig.DEBUG).map { it.id }.toSet()
-    @Composable
-    fun ModelChoice(m: InstalledModel, selected: Boolean, select: () -> Unit) = ModelRow(
-        model = m, download = downloads[m.entry.id], selected = selected, enabled = !locked,
-        onSelect = select,
-        onDownload = { c.downloader.download(m.entry) },
-        onCancel = { c.downloader.cancel(m.entry.id) },
-        onDelete = { c.deleteModel(m.entry) },
-    )
+    var showModels by rememberSaveable { mutableStateOf(false) }
+    if (showModels) {
+        ModelsScreen(vm, onBack = { showModels = false }, modifier)
+        return
+    }
+    fun summary(id: String): String {
+        val m = models.firstOrNull { it.entry.id == id } ?: return "None"
+        return m.entry.displayName + if (m.isInstalled) "" else " · not downloaded"
+    }
 
     Column(modifier.verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (locked) {
@@ -69,36 +72,25 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
             }
         }
 
-        Section("Live typing model") {
-            models.filter { TranscriptionMode.REAL_TIME in it.entry.modes && it.entry.id in visible }.forEach { m ->
-                ModelChoice(m, s.streamingModelId == m.entry.id) { update { it.copy(streamingModelId = m.entry.id) } }
-            }
+        Section("Models") {
+            NavRow("Live typing", summary(s.streamingModelId)) { showModels = true }
+            NavRow("Record first", summary(s.batchModelId)) { showModels = true }
         }
 
-        Section("Record-first model") {
-            models.filter { TranscriptionMode.RECORD_THEN_TRANSCRIBE in it.entry.modes && it.entry.id in visible }.forEach { m ->
-                ModelChoice(m, s.batchModelId == m.entry.id) { update { it.copy(batchModelId = m.entry.id) } }
-            }
-            val batch = ModelCatalog.byId(s.batchModelId)
-            if (batch?.architecture == ModelArchitecture.WHISPER) {
-                Text("Language", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 16.dp, top = 8.dp))
+        Section("Record first") {
+            SwitchRow(
+                "Transcribe when I stop talking",
+                "Recording ends by itself after a pause, then transcription starts. Turn off to stop recording with the button.",
+                s.autoStopOnPause,
+            ) { update { st -> st.copy(autoStopOnPause = it) } }
+            if (s.autoStopOnPause) {
+                Text("Pause length", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 16.dp, top = 8.dp))
                 ChipRow {
-                    batch.languages.forEach { lang ->
-                        FilterChip(selected = s.batchLanguage == lang.code, onClick = { update { it.copy(batchLanguage = lang.code) } },
-                            label = { Text(lang.displayName) }, enabled = !locked)
+                    listOf(1_000, 1_500, 2_000, 3_000).forEach { ms ->
+                        FilterChip(selected = s.pauseToStopMs == ms, onClick = { update { it.copy(pauseToStopMs = ms) } }, label = { Text(formatSeconds(ms / 1000.0)) })
                     }
                 }
-                if (s.batchLanguage == "hi") {
-                    Text(
-                        "Hindi is transcribed in Devanagari, which the US keyboard layout cannot type. You can read and " +
-                            "edit it in review, but sending will stop at the first Devanagari character. Hindi accuracy " +
-                            "of this model has not been evaluated.",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    )
-                }
-            } else if (batch != null) {
-                Text("Language: ${batch.languages.joinToString { it.displayName }} only", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp))
+                Text("Longer pauses leave room to think mid-sentence; you can always tap stop sooner.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
             }
             SwitchRow("Review before sending", "Check and edit the transcript before it is typed.", s.reviewBeforeSending) {
                 update { st -> st.copy(reviewBeforeSending = it) }
@@ -158,7 +150,8 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
         Section("Privacy") {
             Text(
                 "Speech is recognized only on this phone. The internet is used only to download the models you " +
-                    "choose above, from the sherpa-onnx project on GitHub; each file is checked before it is used. " +
+                    "choose, from the sherpa-onnx project on GitHub or (ASR4ALL) FUTO's page on Hugging Face; each file " +
+                    "is checked before it is used. " +
                     "Recordings are stored temporarily and deleted as soon as transcription finishes, fails or is " +
                     "cancelled. Audio and text are never sent anywhere except as keystrokes to your connected device.",
                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp),
@@ -173,7 +166,7 @@ fun SettingsScreen(vm: AppViewModel, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
+internal fun Section(title: String, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(horizontal = 16.dp))
@@ -183,7 +176,7 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun ChoiceRow(title: String, subtitle: String?, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+internal fun ChoiceRow(title: String, subtitle: String?, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().selectable(selected, enabled = enabled, role = Role.RadioButton, onClick = onClick).padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -197,7 +190,7 @@ private fun ChoiceRow(title: String, subtitle: String?, selected: Boolean, enabl
 }
 
 @Composable
-private fun SwitchRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+internal fun SwitchRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth().toggleable(checked, role = Role.Switch, onValueChange = onChange).padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -210,9 +203,24 @@ private fun SwitchRow(title: String, subtitle: String?, checked: Boolean, onChan
     }
 }
 
+/** A row that opens a sub-page: title, current value, chevron. */
+@Composable
+private fun NavRow(title: String, value: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null)
+    }
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun ChipRow(content: @Composable () -> Unit) {
+internal fun ChipRow(content: @Composable () -> Unit) {
     androidx.compose.foundation.layout.FlowRow(
         Modifier.padding(horizontal = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
